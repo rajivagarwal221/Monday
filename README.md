@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Hush — your quiet AI to-do
 
 A solo AI-powered to-do app with the dreamy visual language of
@@ -50,3 +51,6 @@ changes.
 ## Design doc
 
 Full design in [docs/superpowers/specs/](docs/superpowers/specs/).
+=======
+# Monday
+>>>>>>> 98b4fc455270894b9b7758be8a2d515785cb3309
