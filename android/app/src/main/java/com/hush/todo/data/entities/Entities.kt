@@ -55,3 +55,25 @@ data class MessageEntity(
     val createdMs: Long,
     val taskId: String? = null,
 )
+
+@Entity(tableName = "transcripts")
+data class TranscriptEntity(
+    @PrimaryKey val id: String,
+    val raw: String,
+    val corrected: String,
+    val lang: String,
+    val createdMs: Long,
+    val taskId: String? = null,
+)
+
+@Entity(tableName = "extractions")
+data class ExtractionEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    val dueEpochMs: Long? = null,
+    val source: String,
+    val sourceRef: String,
+    val snippet: String,
+    val status: String = "pending",
+    val createdMs: Long,
+)

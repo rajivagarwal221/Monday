@@ -20,11 +20,12 @@ class HushApp : Application() {
         super.onCreate()
         instance = this
         val db = HushDatabase.get(this)
-        repo = Repo(db.tasks(), db.projects(), db.messages())
+        repo = Repo(db.tasks(), db.projects(), db.messages(), db.transcripts(), db.extractions())
         appScope.launch {
             seedIfEmpty(repo)
             purgeDemoTasks(repo)
             repo.tasksSnapshot().forEach { com.hush.todo.notify.scheduleForTask(this@HushApp, it) }
+            com.hush.todo.notify.scheduleMorningSummary(this@HushApp)
         }
     }
 

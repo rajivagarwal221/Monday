@@ -9,8 +9,10 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
@@ -117,6 +119,56 @@ class BootReceiver : BroadcastReceiver() {
         val app = context.applicationContext as HushApp
         CoroutineScope(Dispatchers.IO).launch {
             app.repo.tasksSnapshot().forEach { scheduleForTask(context, it) }
+            scheduleMorningSummary(context)
         }
+    }
+}
+
+fun scheduleMorningSummary(ctx: Context) {
+    val req = PeriodicWorkRequestBuilder<MorningWorker>(6, TimeUnit.HOURS)
+        .build()
+    WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(
+        "hush-morning",
+        ExistingPeriodicWorkPolicy.KEEP,
+        req,
+    )
+}
+
+class MorningWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
+    override fun doWork(): Result {
+        val prefs = applicationContext.getSharedPreferences("hush-public", Context.MODE_PRIVATE)
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        if (hour < 7 || hour > 11) return Result.success()
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        if (prefs.getString("morning", "") == today) return Result.success()
+        val app = applicationContext as HushApp
+        val start = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val week = start + 7L * 24 * 60 * 60 * 1000
+        val n = kotlinx.coroutines.runBlocking {
+            app.repo.tasksSnapshot().count {
+                it.state != "done" && it.dueEpochMs != null && it.dueEpochMs!! in start until week
+            }
+        }
+        prefs.edit().putString("morning", today).apply()
+        if (n == 0) return Result.success()
+        ensureChannel(applicationContext)
+        val open = PendingIntent.getActivity(
+            applicationContext, 2, Intent(applicationContext, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val note = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle("$n thing${if (n == 1) "" else "s"} due this week")
+            .setContentText("Open Hush to review deadlines.")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        try {
+            NotificationManagerCompat.from(applicationContext).notify("hush-morning".hashCode(), note)
+        } catch (_: SecurityException) { }
+        return Result.success()
     }
 }

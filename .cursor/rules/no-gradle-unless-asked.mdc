@@ -1,0 +1,10 @@
+---
+description: Do not assemble Android APKs unless the user explicitly asks
+alwaysApply: true
+---
+
+# Gradle APK builds
+
+Do not run `gradlew`, `assembleDebug`, `assembleRelease`, or any Android APK/AAB build as part of ordinary implementation, verification, or "next step" work.
+
+Only build the APK when the user explicitly asks (for example: "build the apk", "assemble debug", "gradle").

@@ -5,9 +5,11 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
+import com.hush.todo.data.entities.ExtractionEntity
 import com.hush.todo.data.entities.MessageEntity
 import com.hush.todo.data.entities.ProjectEntity
 import com.hush.todo.data.entities.TaskEntity
+import com.hush.todo.data.entities.TranscriptEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -62,4 +64,25 @@ interface MessageDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(item: MessageEntity)
+}
+
+@Dao
+interface TranscriptDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: TranscriptEntity)
+}
+
+@Dao
+interface ExtractionDao {
+    @Query("SELECT * FROM extractions WHERE status = 'pending' ORDER BY createdMs DESC")
+    fun observePending(): Flow<List<ExtractionEntity>>
+
+    @Query("SELECT sourceRef FROM extractions")
+    suspend fun allRefs(): List<String>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: ExtractionEntity)
+
+    @Query("UPDATE extractions SET status = :status WHERE id = :id")
+    suspend fun setStatus(id: String, status: String)
 }

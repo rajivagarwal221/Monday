@@ -22,7 +22,12 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Message
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,11 +39,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hush.todo.ai.AgentStub
+import com.hush.todo.core.CloudLlm
 import com.hush.todo.core.DateParser
 import com.hush.todo.core.ParseResult
 import com.hush.todo.core.SecureSettings
 import com.hush.todo.core.SpeechCapture
+import com.hush.todo.core.deviceTz
 import com.hush.todo.data.Repo
+import com.hush.todo.data.entities.TaskEntity
+import com.hush.todo.data.entities.TranscriptEntity
 import com.hush.todo.notify.scheduleForTask
 import com.hush.todo.data.entities.TaskStates
 import com.hush.todo.ui.components.AgentRing
@@ -50,10 +59,13 @@ import com.hush.todo.ui.theme.HushColors
 import com.hush.todo.ui.theme.HushType
 import com.hush.todo.ui.theme.Inter
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 enum class Tab { Today, Inbox, Upcoming }
 
@@ -70,9 +82,15 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
     var listening by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
     var pending by remember { mutableStateOf<ParseResult?>(null) }
+    var pendingTranscript by remember { mutableStateOf("") }
+    var fallbackOpen by remember { mutableStateOf(false) }
+    var fallbackText by remember { mutableStateOf("") }
+    var editingTask by remember { mutableStateOf<TaskEntity?>(null) }
+    var reviewOpen by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     val settings = remember { SecureSettings(context) }
     val speech = remember { SpeechCapture(context) }
+    val llm = remember { CloudLlm(settings) }
 
     val agent = remember { AgentStub(repo) }
 
@@ -118,26 +136,22 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
 
             // Title block
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                when (tab) {
-                    Tab.Today -> {
-                        Text("Today", style = HushType.DisplayLarge, color = Color.White)
-                    }
-                    Tab.Inbox -> {
-                        Text("Inbox", style = HushType.DisplayLargeItalic, color = Color.White)
-                    }
-                    Tab.Upcoming -> {
-                        Row {
-                            Text("Up", style = HushType.DisplayLarge, color = Color.White)
-                            Text("coming", style = HushType.DisplayLargeItalic, color = Color.White)
-                        }
+                when {
+                    reviewOpen -> Text("Review", style = HushType.DisplayLarge, color = Color.White)
+                    tab == Tab.Today -> Text("Today", style = HushType.DisplayLarge, color = Color.White)
+                    tab == Tab.Inbox -> Text("Inbox", style = HushType.DisplayLargeItalic, color = Color.White)
+                    else -> Row {
+                        Text("Up", style = HushType.DisplayLarge, color = Color.White)
+                        Text("coming", style = HushType.DisplayLargeItalic, color = Color.White)
                     }
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    when (tab) {
-                        Tab.Today -> SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Date())
-                        Tab.Inbox -> "Unsorted captures"
-                        Tab.Upcoming -> "The next seven days"
+                    when {
+                        reviewOpen -> "Accept or reject extracted deadlines"
+                        tab == Tab.Today -> SimpleDateFormat("EEEE, MMMM d", Locale.getDefault()).format(Date())
+                        tab == Tab.Inbox -> "Unsorted captures"
+                        else -> "The next seven days"
                     },
                     color = Color.White.copy(alpha = 0.6f), fontSize = 11.sp, fontFamily = FragmentMono,
                 )
@@ -148,18 +162,34 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
                 Text(it, color = Color.White.copy(0.8f), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp), fontFamily = Inter)
             }
 
+            if (!reviewOpen) {
             QuickCaptureBar(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 onSubmit = { text ->
                     scope.launch {
-                        val t = agent.parseCapture(text)
+                        var parsed = DateParser.parse(text)
+                        if (parsed.needsReview) {
+                            llm.parseAmbiguous(text, System.currentTimeMillis(), deviceTz())?.let { parsed = it }
+                        }
+                        val t = agent.parseCapture(text).copy(
+                            title = parsed.title.ifBlank { text },
+                            dueEpochMs = parsed.dueMs,
+                            confidence = parsed.confidence,
+                            needsReview = parsed.needsReview,
+                            source = "manual",
+                        )
                         repo.addTask(t)
                         scheduleForTask(context, t)
                     }
                 },
             )
+            }
 
-            // Task list
+            if (reviewOpen) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    ReviewScreen(repo = repo, settings = settings, scope = scope, context = context)
+                }
+            } else {
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
@@ -201,6 +231,7 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
                                 onToggle = { scope.launch { repo.toggleDone(task) } },
                                 onSnooze = { scope.launch { repo.snooze(task.id, System.currentTimeMillis() + 60L * 60 * 1000) } },
                                 onDelete = { scope.launch { repo.deleteTask(task.id) } },
+                                onEdit = { editingTask = task },
                                 onAgentAction = { kind -> scope.launch { agent.runOnTask(task, kind) } },
                                 onApprove = { scope.launch { repo.updateTask(task.copy(state = TaskStates.TODO, agentStatus = null, agentOutput = null, agentLastMessage = null, updatedMs = System.currentTimeMillis())) } },
                             )
@@ -216,12 +247,14 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
                             onToggle = { scope.launch { repo.toggleDone(task) } },
                             onSnooze = { scope.launch { repo.snooze(task.id, System.currentTimeMillis() + 60L * 60 * 1000) } },
                             onDelete = { scope.launch { repo.deleteTask(task.id) } },
+                            onEdit = { editingTask = task },
                             onAgentAction = { kind -> scope.launch { agent.runOnTask(task, kind) } },
                             onApprove = { scope.launch { repo.updateTask(task.copy(state = TaskStates.TODO, agentStatus = null, agentOutput = null, agentLastMessage = null, updatedMs = System.currentTimeMillis())) } },
                         )
                     }
                 }
                 item { Spacer(Modifier.height(96.dp)) }
+            }
             }
         }
 
@@ -231,24 +264,27 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
             activeTab = tab,
             agentOpen = agentOpen,
             listening = listening,
-            onTab = { tab = it; agentOpen = false },
+            onTab = { tab = it; agentOpen = false; reviewOpen = false },
             onAgent = { agentOpen = !agentOpen },
             onMic = {
                 if (listening) {
-                    speech.stop { text, conf ->
+                    speech.stop { text, conf, audio ->
                         listening = false
-                        val parsed = DateParser.parse(text)
-                        when (parsed.intent) {
-                            "query_week" -> {
-                                val n = filtered.size
-                                notice = "$n due in this list"
+                        scope.launch {
+                            var transcript = text
+                            if ((transcript.isBlank() || conf < 0.55f) && audio != null) {
+                                llm.transcribe(audio, settings.language)?.let { transcript = it }
                             }
-                            "complete" -> {
-                                val hit = tasks.firstOrNull { it.state != TaskStates.DONE && it.title.contains(parsed.completeQuery ?: "", true) }
-                                if (hit != null) scope.launch { repo.toggleDone(hit) }
-                                notice = if (hit != null) "Marked done: ${hit.title}" else "Not found"
+                            if (transcript.isBlank()) {
+                                fallbackText = ""
+                                fallbackOpen = true
+                                return@launch
                             }
-                            else -> pending = parsed.copy(confidence = if (conf < 0.55f) 0.4f else parsed.confidence)
+                            applyVoice(transcript, conf, tasks, repo, llm) { parsed, note, openConfirm, raw ->
+                                notice = note
+                                pendingTranscript = raw
+                                if (openConfirm) pending = parsed
+                            }
                         }
                     }
                 } else {
@@ -263,6 +299,7 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
                 projects = projects,
                 onProject = { },
                 onSettings = { drawerOpen = false; settingsOpen = true },
+                onReview = { drawerOpen = false; reviewOpen = true; agentOpen = false },
                 onDismiss = { drawerOpen = false },
             )
         }
@@ -282,23 +319,78 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
         pending?.let { p ->
             ConfirmSheet(
                 pending = p,
-                onSave = {
+                transcript = pendingTranscript,
+                onSave = { edited ->
                     scope.launch {
-                        val t = agent.parseCapture(p.title)
+                        val t = agent.parseCapture(edited.title)
                         val saved = t.copy(
-                            title = p.title.ifBlank { t.title },
-                            dueEpochMs = p.dueMs ?: t.dueEpochMs,
+                            title = edited.title.ifBlank { t.title },
+                            dueEpochMs = edited.dueMs ?: t.dueEpochMs,
                             source = "voice",
-                            confidence = p.confidence,
-                            needsReview = p.needsReview,
+                            confidence = edited.confidence,
+                            needsReview = edited.needsReview,
                         )
                         repo.addTask(saved)
                         scheduleForTask(context, saved)
+                        repo.addTranscript(
+                            TranscriptEntity(
+                                id = "tr-" + UUID.randomUUID().toString().take(8),
+                                raw = pendingTranscript,
+                                corrected = saved.title,
+                                lang = settings.language,
+                                createdMs = System.currentTimeMillis(),
+                                taskId = saved.id,
+                            )
+                        )
                         pending = null
                     }
                 },
                 onDismiss = { pending = null },
             )
+        }
+
+        if (fallbackOpen) {
+            TranscriptFallbackSheet(
+                text = fallbackText,
+                onChange = { fallbackText = it },
+                onContinue = {
+                    val t = fallbackText
+                    fallbackOpen = false
+                    if (t.isBlank()) return@TranscriptFallbackSheet
+                    scope.launch {
+                        applyVoice(t, 0.5f, tasks, repo, llm) { parsed, note, openConfirm, raw ->
+                            notice = note
+                            pendingTranscript = raw
+                            if (openConfirm) pending = parsed
+                        }
+                    }
+                },
+                onDismiss = { fallbackOpen = false },
+            )
+        }
+
+        editingTask?.let { task ->
+            TaskEditSheet(
+                task = task,
+                onSave = { title, dueMs ->
+                    scope.launch {
+                        val next = task.copy(title = title, dueEpochMs = dueMs, updatedMs = System.currentTimeMillis())
+                        repo.updateTask(next)
+                        scheduleForTask(context, next)
+                        editingTask = null
+                    }
+                },
+                onDismiss = { editingTask = null },
+            )
+        }
+
+        if (settings.tokenNeedsRefresh()) {
+            TextButton(
+                onClick = { settingsOpen = true },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp),
+            ) {
+                Text("Google access expires about weekly. Tap to re-sign in.", color = Color(0xFFFFE08A), fontSize = 12.sp)
+            }
         }
 
         if (settingsOpen) {
@@ -307,26 +399,140 @@ fun HomeScreen(repo: Repo, scope: CoroutineScope) {
     }
 }
 
+private suspend fun applyVoice(
+    transcript: String,
+    conf: Float,
+    tasks: List<TaskEntity>,
+    repo: Repo,
+    llm: CloudLlm,
+    emit: (ParseResult?, String?, Boolean, String) -> Unit,
+) {
+    var parsed = DateParser.parse(transcript)
+    if (parsed.needsReview || parsed.dueMs == null && parsed.intent == "add") {
+        withContext(Dispatchers.IO) { llm.parseAmbiguous(transcript, System.currentTimeMillis(), deviceTz()) }?.let { parsed = it }
+    }
+    if (conf < 0.55f && parsed.intent == "add") parsed = parsed.copy(confidence = minOf(parsed.confidence, 0.4f), needsReview = true)
+    when (parsed.intent) {
+        "query_week" -> {
+            val start = java.util.Calendar.getInstance().apply {
+                set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            val weekEnd = start + 7L * 24 * 60 * 60 * 1000
+            val n = tasks.count { it.state != TaskStates.DONE && it.dueEpochMs != null && it.dueEpochMs!! in start until weekEnd }
+            emit(null, if (n == 0) "Nothing due this week." else "$n due this week", false, transcript)
+        }
+        "complete" -> {
+            val q = parsed.completeQuery ?: parsed.title
+            val hit = tasks.firstOrNull { it.state != TaskStates.DONE && it.title.contains(q, true) }
+            if (hit != null) repo.toggleDone(hit)
+            emit(null, if (hit != null) "Marked done: ${hit.title}" else "Not found", false, transcript)
+        }
+        else -> emit(parsed, null, true, transcript)
+    }
+}
+
 @Composable
-private fun ConfirmSheet(pending: ParseResult, onSave: () -> Unit, onDismiss: () -> Unit) {
+private fun ConfirmSheet(
+    pending: ParseResult,
+    transcript: String,
+    onSave: (ParseResult) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var editing by remember { mutableStateOf(false) }
+    var title by remember { mutableStateOf(pending.title) }
+    var dueLocal by remember { mutableStateOf(pending.dueMs?.let { fmtLocal(it) } ?: "") }
     Box(Modifier.fillMaxSize().background(Color(0x99000000)), contentAlignment = Alignment.Center) {
         GlassSurface(shape = RoundedCornerShape(20.dp), strong = true, modifier = Modifier.padding(24.dp).fillMaxWidth()) {
             Column(Modifier.padding(20.dp)) {
                 Text("Confirm before saving", color = Color.White.copy(0.5f), fontSize = 10.sp, fontFamily = FragmentMono)
                 if (pending.needsReview) Text("needs review", color = HushColors.AgentGold, fontSize = 11.sp, fontFamily = Inter)
                 Spacer(Modifier.height(8.dp))
-                Text(pending.title.ifBlank { "Untitled" }, color = Color.White, style = HushType.DisplayMedium)
-                pending.dueMs?.let {
-                    Text(SimpleDateFormat("EEE d MMM, HH:mm", Locale.getDefault()).format(Date(it)), color = Color.White.copy(0.7f), fontSize = 12.sp, fontFamily = FragmentMono)
+                if (editing) {
+                    OutlinedTextField(title, { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(dueLocal, { dueLocal = it }, label = { Text("Due yyyy-MM-dd HH:mm") }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    Text(title.ifBlank { "Untitled" }, color = Color.White, style = HushType.DisplayMedium)
+                    Text(
+                        dueLocal.ifBlank { "No time set" }.let { if (pending.dueMs != null && dueLocal.isBlank()) SimpleDateFormat("EEE d MMM, HH:mm", Locale.getDefault()).format(Date(pending.dueMs)) else it },
+                        color = Color.White.copy(0.7f),
+                        fontSize = 12.sp,
+                        fontFamily = FragmentMono,
+                    )
+                }
+                if (transcript.isNotBlank()) {
+                    Text("Heard: $transcript", color = Color.White.copy(0.45f), fontSize = 12.sp, fontFamily = Inter, modifier = Modifier.padding(top = 8.dp))
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onSave) { Text("Save") }
+                    Button(onClick = {
+                        val due = parseLocal(dueLocal) ?: pending.dueMs
+                        onSave(pending.copy(title = title, dueMs = due))
+                    }) { Text("Save") }
+                    TextButton(onClick = { editing = !editing }) { Text(if (editing) "Preview" else "Edit", color = Color.White) }
                     TextButton(onClick = onDismiss) { Text("Dismiss", color = Color.White) }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun TranscriptFallbackSheet(
+    text: String,
+    onChange: (String) -> Unit,
+    onContinue: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Box(Modifier.fillMaxSize().background(Color(0x99000000)), contentAlignment = Alignment.Center) {
+        GlassSurface(shape = RoundedCornerShape(20.dp), strong = true, modifier = Modifier.padding(24.dp).fillMaxWidth()) {
+            Column(Modifier.padding(20.dp)) {
+                Text("Recognition did not catch that. Edit the transcript, then continue.", color = Color.White.copy(0.7f), fontSize = 13.sp, fontFamily = Inter)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(text, onChange, modifier = Modifier.fillMaxWidth(), label = { Text("Transcript") })
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onContinue) { Text("Continue") }
+                    TextButton(onClick = onDismiss) { Text("Dismiss", color = Color.White) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskEditSheet(
+    task: TaskEntity,
+    onSave: (String, Long?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var title by remember { mutableStateOf(task.title) }
+    var dueLocal by remember { mutableStateOf(task.dueEpochMs?.let { fmtLocal(it) } ?: "") }
+    Box(Modifier.fillMaxSize().background(Color(0x99000000)), contentAlignment = Alignment.Center) {
+        GlassSurface(shape = RoundedCornerShape(20.dp), strong = true, modifier = Modifier.padding(24.dp).fillMaxWidth()) {
+            Column(Modifier.padding(20.dp)) {
+                Text("Edit task", color = Color.White.copy(0.5f), fontSize = 10.sp, fontFamily = FragmentMono)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(title, { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(dueLocal, { dueLocal = it }, label = { Text("Due yyyy-MM-dd HH:mm") }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onSave(title.trim().ifBlank { task.title }, parseLocal(dueLocal) ?: task.dueEpochMs) }) { Text("Save") }
+                    TextButton(onClick = onDismiss) { Text("Cancel", color = Color.White) }
+                }
+            }
+        }
+    }
+}
+
+private fun fmtLocal(ms: Long): String = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(ms))
+
+private fun parseLocal(raw: String): Long? {
+    if (raw.isBlank()) return null
+    return runCatching { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).parse(raw)?.time }.getOrNull()
+        ?: runCatching { SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.getDefault()).parse(raw)?.time }.getOrNull()
 }
 
 @Composable

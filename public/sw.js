@@ -20,6 +20,19 @@ self.addEventListener('message', (e) => {
   if (data.type === 'COMPLETE' && data.taskId) {
     jobs = jobs.filter((j) => j.taskId !== data.taskId);
   }
+  if (data.type === 'SHOW_REMINDER' && data.job) {
+    const job = data.job;
+    fired.add(job.id);
+    self.registration.showNotification(job.title, {
+      body: job.due ? `Due ${new Date(job.due).toLocaleString()}` : 'Deadline reminder',
+      tag: job.id,
+      data: { taskId: job.taskId, jobId: job.id },
+      actions: [
+        { action: 'done', title: 'Done' },
+        { action: 'snooze', title: 'Snooze' },
+      ],
+    });
+  }
 });
 
 self.addEventListener('notificationclick', (e) => {

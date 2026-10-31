@@ -64,6 +64,14 @@ export function fireReminder(job: Job) {
   if (armed.has(job.id)) return;
   armed.add(job.id);
   if (Notification.permission !== 'granted') return;
+  const payload = {
+    type: 'SHOW_REMINDER',
+    job,
+  };
+  if (navigator.serviceWorker?.controller) {
+    navigator.serviceWorker.controller.postMessage(payload);
+    return;
+  }
   const n = new Notification(job.title, {
     body: `Due ${new Date(job.due).toLocaleString()}`,
     tag: job.id,

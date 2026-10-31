@@ -1,19 +1,24 @@
 package com.hush.todo.data
 
+import com.hush.todo.data.entities.ExtractionEntity
 import com.hush.todo.data.entities.MessageEntity
 import com.hush.todo.data.entities.ProjectEntity
 import com.hush.todo.data.entities.TaskEntity
 import com.hush.todo.data.entities.TaskStates
+import com.hush.todo.data.entities.TranscriptEntity
 import kotlinx.coroutines.flow.Flow
 
 class Repo(
     private val tasks: TaskDao,
     private val projects: ProjectDao,
     private val messages: MessageDao,
+    private val transcripts: TranscriptDao,
+    private val extractions: ExtractionDao,
 ) {
     fun tasks(): Flow<List<TaskEntity>> = tasks.observeAll()
     fun projects(): Flow<List<ProjectEntity>> = projects.observe()
     fun messages(): Flow<List<MessageEntity>> = messages.observe()
+    fun pendingExtractions(): Flow<List<ExtractionEntity>> = extractions.observePending()
 
     suspend fun addTask(t: TaskEntity) = tasks.upsert(t)
     suspend fun updateTask(t: TaskEntity) = tasks.update(t)
@@ -39,6 +44,16 @@ class Repo(
     }
 
     suspend fun tasksSnapshot(): List<TaskEntity> = tasks.getAll()
+
+    suspend fun addTranscript(t: TranscriptEntity) = transcripts.upsert(t)
+
+    suspend fun addExtractionIfNew(e: ExtractionEntity): Boolean {
+        if (extractions.allRefs().contains(e.sourceRef)) return false
+        extractions.upsert(e)
+        return true
+    }
+
+    suspend fun setExtractionStatus(id: String, status: String) = extractions.setStatus(id, status)
 
     suspend fun hasProjects(): Boolean = projects.count() > 0
 

@@ -13,11 +13,12 @@ interface TaskStore {
 
 interface SpeechInput {
     fun start(lang: String)
-    fun stop(onResult: (transcript: String, confidence: Float) -> Unit)
+    fun stop(onResult: (transcript: String, confidence: Float, audio: ByteArray?) -> Unit)
     fun abort()
 }
 
 interface LlmClient {
     suspend fun parseAmbiguous(text: String, nowMs: Long, tz: String): ParseResult?
     suspend fun transcribe(audio: ByteArray, lang: String): String?
+    suspend fun generate(prompt: String): String?
 }

@@ -30,6 +30,7 @@ fun NavDrawer(
     projects: List<ProjectEntity>,
     onProject: (ProjectEntity) -> Unit,
     onSettings: () -> Unit = {},
+    onReview: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     Box(
@@ -80,6 +81,13 @@ fun NavDrawer(
                 }
             }
             Spacer(Modifier.weight(1f))
+            Text(
+                "Review mail",
+                color = Color.White.copy(alpha = 0.85f),
+                fontSize = 14.sp,
+                fontFamily = Inter,
+                modifier = Modifier.clickable { onReview() }.padding(8.dp),
+            )
             Text(
                 "Settings",
                 color = Color.White.copy(alpha = 0.85f),
